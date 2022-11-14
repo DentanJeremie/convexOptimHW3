@@ -1,5 +1,4 @@
-import autograd.numpy as np
-from autograd import grad
+import torch
 
 from utils.pathtools import project
 
@@ -7,70 +6,63 @@ class Centering(object):
 
     def __init__(
         self,
-        Q: np.ndarray,
-        p: np.ndarray,
-        A: np.ndarray,
-        b: np.ndarray,
+        Q: torch.tensor,
+        p: torch.tensor,
+        A: torch.tensor,
+        b: torch.tensor,
         t: float,
-        v0: np.ndarray,
+        v0: torch.tensor,
         eps: float,
     ):
-        self.Q: np.ndarray = Q
-        self.p: np.ndarray = p
-        self.A: np.ndarray = A
-        self.b: np.ndarray = b
+        self.Q: torch.tensor = Q
+        self.p: torch.tensor = p
+        self.A: torch.tensor = A
+        self.b: torch.tensor = b
         self.t: float = t
-        self.v0: np.ndarray = v0
+        self.v0: torch.tensor = v0
         self.eps: float = eps
 
+        # No grad on those parameters
+        self.Q.requires_grad = False
+        self.p.requires_grad = False
+        self.A.requires_grad = False
+        self.b.requires_grad = False
+
+        # Dimension of our problem
         self.d = self.v0.shape[0]
 
-        def evaluate(v: np.ndarray) -> float:
-            return (
-                v.T @ self.Q @ v
-                + self.p.T @ v
-                - np.log(b - self.A @ v)
-            )
-
-        self.f = evaluate
-        self.D_f = grad(self.f)
-        self.D2_f = grad(self.D_f)
-
-    def evaluate(self, v:np.ndarray) -> None:
+    def evaluate(self, v:torch.tensor) -> torch.tensor:
         return (
-            v.T @ self.Q @ v
-            + self.p.T @ v
-            - np.log(b - self.A @ v)
+            v@self.Q@v
+            + self.p@v
+            + torch.log(self.b - v@self.A).sum()
         )
 
-    def __call__(self, v:np.ndarray) -> float:
-        return self.f(v)
-    
-    def autograd(self, v:np.ndarray) -> np.ndarray:
-        return self.D_f(v)
+    def grad(self, v: torch.tensor) -> torch.tensor:
+        v.requires_grad = True
+        if v.grad is not None:
+            v.grad.zero_()
+        output = self.evaluate(v)
+        output.backward()
+        return v.grad
 
-    def autohessian(self, v:np.ndarray) -> np.ndarray:
-        return self.D2_f(v)
+    def hessian(self, v:torch.tensor) -> torch.tensor:
+        return torch.autograd.functional.hessian(self.evaluate, v)
 
-    def grad(self, v:np.ndarray) -> np.ndarray:
-        part_function = self.t*(2*self.Q@v + self.p)
-
-        factors = 1 / (self.b - self.A@v)
-        part_barrier = self.A.T @ factors
-
-        return part_function + part_barrier
+    def __call__(self, v:torch.tensor) -> float:
+        return self.evaluate(v)
 
 
 if __name__ == '__main__':
     pass
 
-Q = np.array([[1,2],[3,4]])
-p = np.array([5,6])
-A = np.array([[0,2],[8,3]])
-b = np.array([5,2])
+Q = torch.tensor([[1,2],[3,4]], dtype = torch.float64)
+p = torch.tensor([5,6], dtype = torch.float64)
+A = torch.tensor([[0,2],[8,3]], dtype = torch.float64)
+b = torch.tensor([5,2], dtype = torch.float64)
 t = .7
-v0 = np.array([2,8])
+v0 = torch.tensor([2,8], dtype = torch.float64)
 eps = 10e-6
 
 test = Centering(Q, p, A, b, t, v0, eps)
-v0 = np.array([2,8])
+v = torch.tensor([-10,-30], dtype = torch.float64)
