@@ -17,10 +17,13 @@ class Centering(object):
         v0: torch.tensor,
         eps: float,
         *,
-        alpha_bls: float = .2,
+        alpha_bls: float = .3,
         beta_bls: float = .9,
-        max_step = 100,
+        max_step = 1000,
     ):
+        # Debug
+        logging.debug('Initializing a new Newton optimizer.')
+
         self.Q: torch.tensor = Q
         self.p: torch.tensor = p
         self.A: torch.tensor = A
@@ -41,7 +44,7 @@ class Centering(object):
         self.p.requires_grad = False
         self.A.requires_grad = False
         self.b.requires_grad = False
-        self.v0.requires_grad = True
+        self.v0.requires_grad = False
 
         # Not in domain warning
         if not self.is_in_domain(self.v0):
@@ -54,19 +57,24 @@ class Centering(object):
         return (
             v@self.Q@v
             + self.p@v
-            + (1/self.t) * torch.log(self.b - v@self.A).sum()
+            - (1/self.t) * torch.log(self.b - v@self.A).sum()
         )
 
     def grad(self, v: torch.tensor) -> torch.tensor:
-        return torch.autograd.grad(outputs = self.evaluate(v), inputs = v)[0]
+        u = v.detach()
+        u.requires_grad = True
+        return torch.autograd.grad(outputs = self.evaluate(u), inputs = u)[0]
 
     def hessian(self, v:torch.tensor) -> torch.tensor:
-        return torch.autograd.functional.hessian(self.evaluate, v)
+        return torch.autograd.functional.hessian(self.evaluate, v.detach())
 
     def newton_direction(self, v:torch.tensor) -> torch.tensor:
         hess = self.hessian(v)
         grad = self.grad(v)
-        return -1 * grad @ torch.inverse(hess)
+        return -1 * torch.inverse(hess) @ grad
+
+    def sgd_direction(self, v):
+        return -1*self.grad(v)
 
     def backtrack_line_search(self, v:torch.tensor, direction:torch.tensor):
         r = 1
@@ -77,14 +85,24 @@ class Centering(object):
             or
             (
                 self.evaluate(v + r*direction)
-                >= self.evaluate(v) + self.alpha_bls * r * self.grad(v) @ direction
+                > self.evaluate(v) + self.alpha_bls * r * self.grad(v) @ direction
             )
         ):
             r *= self.beta_bls
 
+            # Checking convexity inequality
+            if (
+                self.is_in_domain(v + r*direction)
+                and 
+                not self.evaluate(v + r*direction) >= self.evaluate(v) + r * self.grad(v) @ direction
+            ):
+                logging.warning('Unsatisfied convexity inequality.')
+
+        logging.debug(f'Backtraching line search final parameter : {r}')
         return v + r*direction
 
     def newton_optimize(self):
+        logging.debug('Starting a new Newton optimization.')
         v = self.v0
         variables_iterates = [v]
         objective_iterates = [self.evaluate(v).item()]
@@ -92,7 +110,8 @@ class Centering(object):
 
         step = 0
         while torch.linalg.vector_norm(self.grad(v)).item() > self.eps and step <= self.max_step:
-            direction = self.newton_direction(v)
+            #direction = self.newton_direction(v)
+            direction = self.sgd_direction(v)
             v = self.backtrack_line_search(v, direction)
 
             variables_iterates.append(v)
@@ -130,19 +149,20 @@ def centering_step(
 
 if __name__ == '__main__':
 
-    Q = torch.tensor([[1,2],[3,4]], dtype = torch.float64)
-    p = torch.tensor([5,6], dtype = torch.float64)
-    A = torch.tensor([[0,2],[8,3]], dtype = torch.float64)
-    b = torch.tensor([5,2], dtype = torch.float64)
-    t = .7
-    v0 = torch.tensor([-12,-8], dtype = torch.float64)
-    eps = 10e-8
+    dim = 20
+
+    q_gen = torch.randn(dim, dim)
+    Q = torch.mm(q_gen, q_gen.t()) + torch.eye(dim)
+    p = torch.randn(dim)
+    A = torch.randn(dim, 5*dim)
+    b = 100+torch.randn(5*dim)
+    t = 10
+    v0 = torch.zeros(dim)
+    eps = 10e-6
 
     test = Centering(Q, p, A, b, t, v0, eps)
     variables_iterates, objective_iterates, gradients_norm_iterates = test.newton_optimize()
 
-    print('Hey')
-
-    logging.info(f'Objective iterates: {objective_iterates}')
-    logging.info(f'Variables iterates: {variables_iterates}')
-    logging.info(f'Gradients norm iterates: {gradients_norm_iterates}')
+    logging.info(f'Objective last iterates: {objective_iterates[-1]}')
+    logging.info(f'Variables last iterates: {variables_iterates[-1]}')
+    logging.info(f'Gradients norm last iterates: {gradients_norm_iterates[-1]}')

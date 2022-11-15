@@ -4,6 +4,7 @@ import typing as t
 import torch
 
 from centering import Centering
+import utils
 
 class Barrier(object):
     
@@ -17,13 +18,16 @@ class Barrier(object):
         eps: float,
         *,
         eps_newton: float = -1,
-        alpha_bls: float = .2,
+        alpha_bls: float = .3,
         beta_bls: float = .9,
         t0_barrier: float = 1.0,
         mu_barrier: float = 2,
         max_step_newton: int = 100,
         max_step_barrier: int = 100,
     ):
+        # Debug
+        logging.debug('Initializing a new barrier optimizer.')
+
         self.Q: torch.tensor = Q
         self.p: torch.tensor = p
         self.A: torch.tensor = A
@@ -63,6 +67,8 @@ class Barrier(object):
         )
     
     def barrier_optimize(self):
+        logging.debug('Starting a new barrier optimization.')
+
         v = self.v0
         t = self.t0_barrier
         variables_iterates = [v]
@@ -91,7 +97,6 @@ class Barrier(object):
 
             # Debug
             logging.debug(f'New barrier step with value t={t}')
-            logging.debug(f'Newton optimization values : {optimized[1]}')
             logging.debug(f'New value for v : {v}')
             logging.debug(f'Objective value with this v : {objective_iterates[-1]}')
 
@@ -120,12 +125,15 @@ def barr_method(
 
 if __name__ == '__main__':
 
-    Q = torch.tensor([[1,2],[3,4]], dtype = torch.float64)
-    p = torch.tensor([5,6], dtype = torch.float64)
-    A = torch.tensor([[0,2],[8,3]], dtype = torch.float64)
-    b = torch.tensor([5,2], dtype = torch.float64)
-    v0 = torch.tensor([-12,-8], dtype = torch.float64)
-    eps = 10e-8
+    dim = 20
+
+    q_gen = torch.randn(dim, dim)
+    Q = torch.mm(q_gen, q_gen.t()) + torch.eye(dim)
+    p = torch.randn(dim)
+    A = torch.randn(dim, 5*dim)
+    b = 100+torch.randn(5*dim)
+    v0 = torch.zeros(dim)
+    eps = 10e-6
 
     test = Barrier(Q, p, A, b, v0, eps)
     variables_iterates, objective_iterates = test.barrier_optimize()

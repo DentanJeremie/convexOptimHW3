@@ -2,6 +2,7 @@ import logging
 import torch
 
 from barrier import Barrier
+import utils
 
 class MSE(object):
 
@@ -11,9 +12,9 @@ class MSE(object):
         d: int,
         lambda_lasso: float,
         *,
-        eps_barrier: float = 10e-8,
-        eps_newton: float = 10e-8,
-        alpha_bls: float = .2,
+        eps_barrier: float = 10e-6,
+        eps_newton: float = 10e-6,
+        alpha_bls: float = .3,
         beta_bls: float = .9,
         t0_barrier: float = 1.0,
         mu_barrier: float = 2,
@@ -35,34 +36,42 @@ class MSE(object):
         self.max_step_barrier: int = max_step_barrier
 
         # Initiating data
-        self.X: torch.tensor = torch.randn(self.d, self.n)
+        self.X: torch.tensor = torch.randn(self.n, self.d)
         self.target_w: torch.tensor = torch.randn(self.d)
         self.data_noise = data_noise
-        self.y: torch.tensor = self.target_w @ self.X + self.data_noise * torch.normal(mean=torch.zeros(self.n))
+        self.y: torch.tensor = self.X @ self.target_w + self.data_noise * torch.normal(mean=torch.zeros(self.n))
+
+        # Debug
+        logging.debug(f'shape X: {self.X.shape}')
+        logging.debug(f'shape target_w: {self.target_w.shape}')
+        logging.debug(f'shape y: {self.y.shape}')
         
     def optimize_mse(self):
         # Parameters
         Q = -0.5 * torch.eye(self.n)
         p = -1.0 * self.y
-        logging.debug(f'shape X: {self.X.shape}')
         A = torch.cat(
             (
                 self.X,
                 -1*self.X,
-                -1*torch.eye(self.d)
+                -1*torch.eye(self.n)
             ),
             dim=1
         )
-        logging.debug(f'shape A: {A.shape}')
         b = torch.cat(
             (
-                self.lambda_lasso * torch.ones(self.n),
-                self.lambda_lasso * torch.ones(self.n),
-                torch.zeros(self.d)
+                self.lambda_lasso * torch.ones(self.d),
+                self.lambda_lasso * torch.ones(self.d),
+                torch.zeros(self.n),
             )
         )
-        logging.debug(f'shape b: {b.shape}')
         v0 = self.eps_newton * torch.ones(self.n)
+
+        logging.debug(f'shape Q: {Q.shape}')
+        logging.debug(f'shape p: {p.shape}')
+        logging.debug(f'shape A: {A.shape}')
+        logging.debug(f'shape b: {b.shape}')
+        logging.debug(f'shape v0: {v0.shape}')
 
         # Barrier solver
         barrier_solver = Barrier(
@@ -91,8 +100,8 @@ class MSE(object):
 
 if __name__ == '__main__':
 
-    n = 20
-    d = 1000
+    n = 2
+    d = 10
     lambda_lasso = 10
 
     solver = MSE(n, d, lambda_lasso)
