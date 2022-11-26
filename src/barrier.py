@@ -1,20 +1,19 @@
-import logging
 import typing as t
 
-import torch
+import numpy as np
 
-from centering import Centering
-import utils
+from src.centering import Centering
+from src.utils.logging import logger
 
 class Barrier(object):
     
     def __init__(
         self,
-        Q: torch.tensor,
-        p: torch.tensor,
-        A: torch.tensor,
-        b: torch.tensor,
-        v0: torch.tensor,
+        Q: np.ndarray,
+        p: np.ndarray,
+        A: np.ndarray,
+        b: np.ndarray,
+        v0: np.ndarray,
         eps: float,
         *,
         eps_newton: float = -1,
@@ -26,13 +25,13 @@ class Barrier(object):
         max_step_barrier: int = 100,
     ):
         # Debug
-        logging.debug('Initializing a new barrier optimizer.')
+        logger.debug('Initializing a new barrier optimizer.')
 
-        self.Q: torch.tensor = Q
-        self.p: torch.tensor = p
-        self.A: torch.tensor = A
-        self.b: torch.tensor = b
-        self.v0: torch.tensor = v0
+        self.Q: np.ndarray = Q
+        self.p: np.ndarray = p
+        self.A: np.ndarray = A
+        self.b: np.ndarray = b
+        self.v0: np.ndarray = v0
         self.eps: float = eps
         self.eps_newton: float = eps_newton
 
@@ -47,7 +46,7 @@ class Barrier(object):
         # Barrier parameters
         self.t0_barrier: float = t0_barrier
         self.mu_barrier: float= mu_barrier
-        self.m : int = self.b.size(-1)
+        self.m : int = self.b.shape[-1]
 
         # Max step
         self.max_step_newton: int = max_step_newton
@@ -55,24 +54,25 @@ class Barrier(object):
 
         # Checking if v0 is in the domain
         if not self.is_in_domain(self.v0):
-            logging.warning("Out-of-domain starting point.")
+            logger.warning("Out-of-domain starting point.")
 
-    def is_in_domain(self, v:torch.tensor) -> bool:
-        return (self.b - v@self.A > 0).all().item()
+    def is_in_domain(self, v:np.ndarray) -> bool:
+        return (self.b - self.A @ v > 0).all()
     
-    def evaluate(self, v:torch.tensor) -> torch.tensor:
+    def evaluate(self, v:np.ndarray) -> np.ndarray:
         return (
-            v@self.Q@v
-            + self.p@v
+            v @ self.Q @ v
+            + self.p @ v
         )
     
     def barrier_optimize(self):
-        logging.debug('Starting a new barrier optimization.')
+        logger.info('Starting a new barrier optimization.')
 
         v = self.v0
         t = self.t0_barrier
         variables_iterates = [v]
-        objective_iterates = []
+        objective_iterates = [self.evaluate(v)]
+        logger.debug(f'Initial objective value : {objective_iterates[-1]}')
 
         step = 0
         while self.m / t >= self.eps and step <= self.max_step_barrier:
@@ -82,42 +82,42 @@ class Barrier(object):
                 A = self.A,
                 b = self.b,
                 t = t,
-                v0 = v.detach(),
+                v0 = v,
                 eps = self.eps_newton,
                 max_step=self.max_step_newton,
                 alpha_bls=self.alpha_bls,
                 beta_bls=self.beta_bls
             )
-            optimized = newton_solver.newton_optimize()
+            variables_iterates, _, _ = newton_solver.newton_optimize()
 
-            v = optimized[0][-1]
+            v = variables_iterates[-1]
             t *= self.mu_barrier
             variables_iterates.append(v)
-            objective_iterates.append(self.evaluate(v).item())
+            objective_iterates.append(self.evaluate(v))
 
             # Debug
-            logging.debug(f'New barrier step with value t={t}')
-            logging.debug(f'New value for v : {v}')
-            logging.debug(f'Objective value with this v : {objective_iterates[-1]}')
+            logger.debug(f'New barrier step with value t={t}')
+            logger.debug(f'Objective value with this v : {objective_iterates[-1]}')
 
             step += 1
 
         if step > self.max_step_barrier:
-            logging.warning("Max step number reached before gradient norm stopping criterion.")
+            logger.warning("Max step number reached before gradient norm stopping criterion.")
 
-        logging.debug('End of Barrier Optimization.')
+        min_reached = np.min(np.array(objective_iterates))
+        logger.info(f'End of Barrier Optimization. Best value reached: {min_reached}')
         
         return variables_iterates, objective_iterates
 
 
 def barr_method(
-    Q: torch.tensor,
-    p: torch.tensor,
-    A: torch.tensor,
-    b: torch.tensor,
-    v0: torch.tensor,
+    Q: np.ndarray,
+    p: np.ndarray,
+    A: np.ndarray,
+    b: np.ndarray,
+    v0: np.ndarray,
     eps: float,
-) -> t.List[torch.tensor]:
+) -> t.List[np.ndarray]:
 
     solver = Barrier(Q, p, A, b, v0, eps)
     return solver.barrier_optimize()[0]
@@ -127,18 +127,17 @@ if __name__ == '__main__':
 
     dim = 20
 
-    q_gen = torch.randn(dim, dim)
-    Q = torch.mm(q_gen, q_gen.t()) + torch.eye(dim)
-    p = torch.randn(dim)
-    A = torch.randn(dim, 5*dim)
-    b = 100+torch.randn(5*dim)
-    v0 = torch.zeros(dim)
-    eps = 10e-6
+    q_gen = np.random.random((dim, dim))
+    Q = np.matmul(q_gen, q_gen.transpose()) + np.eye(dim)
+    p = np.random.random(dim)
+    A = np.random.random((5*dim, dim))
+    b = 100+np.random.random(5*dim)
+    v0 = np.zeros(dim)
+    eps = 10e-8
 
     test = Barrier(Q, p, A, b, v0, eps)
     variables_iterates, objective_iterates = test.barrier_optimize()
 
-    logging.info(f'End of Barrier optimization.')
-    logging.info(f'Final value of v : {variables_iterates[-1]}')
-    logging.info(f'Objective value with this v : {objective_iterates[-1]}')
+    logger.info(f'End of Barrier optimization.')
+    logger.info(f'Objective value with this v : {objective_iterates[-1]}')
 

@@ -1,20 +1,20 @@
-import logging
 import typing as t
 
-import torch
+import numpy as np
 
-import utils
+from src.utils.pathtools import project
+from src.utils.logging import logger
 
 class Centering(object):
 
     def __init__(
         self,
-        Q: torch.tensor,
-        p: torch.tensor,
-        A: torch.tensor,
-        b: torch.tensor,
+        Q: np.ndarray,
+        p: np.ndarray,
+        A: np.ndarray,
+        b: np.ndarray,
         t: float,
-        v0: torch.tensor,
+        v0: np.ndarray,
         eps: float,
         *,
         alpha_bls: float = .3,
@@ -22,14 +22,14 @@ class Centering(object):
         max_step = 1000,
     ):
         # Debug
-        logging.debug('Initializing a new Newton optimizer.')
+        logger.debug('Initializing a new Newton optimizer.')
 
-        self.Q: torch.tensor = Q
-        self.p: torch.tensor = p
-        self.A: torch.tensor = A
-        self.b: torch.tensor = b
+        self.Q: np.ndarray = Q
+        self.p: np.ndarray = p
+        self.A: np.ndarray = A
+        self.b: np.ndarray = b
         self.t: float = t
-        self.v0: torch.tensor = v0
+        self.v0: np.ndarray = v0
         self.eps: float = eps
 
         # Backtracking line search
@@ -39,109 +39,120 @@ class Centering(object):
         # Max step
         self.max_step: int = max_step
 
-        # grad / no grad on the parameters
-        self.Q.requires_grad = False
-        self.p.requires_grad = False
-        self.A.requires_grad = False
-        self.b.requires_grad = False
-        self.v0.requires_grad = False
-
         # Not in domain warning
         if not self.is_in_domain(self.v0):
-            logging.warning("Out-of-domain starting point.")
+            logger.warning("Out-of-domain starting point.")
 
-    def is_in_domain(self, v:torch.tensor) -> bool:
-        return (self.b - v@self.A > 0).all().item()
+    def is_in_domain(self, v:np.ndarray) -> bool:
+        return (self.g(v) > 0).all()
+
+    def g(self, v: np.ndarray) -> np.ndarray:
+        return self.b - self.A @ v
+
+    def H(self, v: np.ndarray) -> np.ndarray:
+        return self.A.T / self.g(v)
+
+    def evaluate(self, v: np.ndarray) -> np.ndarray:
+        return self.t * (v @ self.Q @ v + self.p @ v) - np.sum(np.log(self.g(v)))
+
+    def gradient(self, v: np.ndarray) -> np.ndarray:
+        return 2 * self.t * self.Q @ v + self.t * self.p + np.sum(self.H(v), axis=1)
+
+    def hessian(self, v: np.ndarray) -> np.ndarray:
+        return 2 * self.t * self.Q + self.H(v) @ self.H(v).T
     
-    def evaluate(self, v:torch.tensor) -> torch.tensor:
-        return (
-            v@self.Q@v
-            + self.p@v
-            - (1/self.t) * torch.log(self.b - v@self.A).sum()
-        )
+    def evaluate_derivatives(self, v:np.ndarray) -> t.Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Computes the value of the function, of its gradient, and of its Hessian
 
-    def grad(self, v: torch.tensor) -> torch.tensor:
-        u = v.detach()
-        u.requires_grad = True
-        return torch.autograd.grad(outputs = self.evaluate(u), inputs = u)[0]
+        :param v: The point on which to compute the function and its derivatives
+        :returns: A tuple (f(v), grad_f(v), hessian_f(v))
+        """
 
-    def hessian(self, v:torch.tensor) -> torch.tensor:
-        return torch.autograd.functional.hessian(self.evaluate, v.detach())
+        g: np.ndarray = self.b - self.A @ v
+        H: np.ndarray = self.A.transpose() / g
 
-    def newton_direction(self, v:torch.tensor) -> torch.tensor:
+        function_value = self.t * (v @ self.Q @ v + self.p @ v) - np.sum(np.log(g))
+        gradient_value = 2 * self.t * self.Q @ v + self.t * self.p + np.sum(H, axis=1)
+        hessian_value = 2 * self.t * self.Q + H @ H.T
+
+        return (function_value, gradient_value, hessian_value)
+
+    def newton_decrement_squared(
+        self,
+        v: np.ndarray,
+        direction: np.ndarray,
+    ) -> float:
+        return (-self.gradient(v) @ direction) / 2
+
+    def newton_direction(self, v:np.ndarray) -> np.ndarray:
+        grad = self.gradient(v)
         hess = self.hessian(v)
-        grad = self.grad(v)
-        return -1 * torch.inverse(hess) @ grad
+        return -1 * np.linalg.inv(hess) @ grad
 
-    def sgd_direction(self, v):
-        return -1*self.grad(v)
-
-    def backtrack_line_search(self, v:torch.tensor, direction:torch.tensor):
-        r = 1
+    def backtrack_line_search(self, v:np.ndarray, direction:np.ndarray):
+        r = 1 / self.beta_bls
         while (
             (
-                not self.is_in_domain(v + r*direction)
+                not self.is_in_domain(v + r * direction)
             )
             or
             (
-                self.evaluate(v + r*direction)
-                > self.evaluate(v) + self.alpha_bls * r * self.grad(v) @ direction
+                self.evaluate(v + r * direction)
+                > self.evaluate(v) + self.alpha_bls * r * self.gradient(v) @ direction
             )
         ):
             r *= self.beta_bls
 
-            # Checking convexity inequality
-            if (
-                self.is_in_domain(v + r*direction)
-                and 
-                not self.evaluate(v + r*direction) >= self.evaluate(v) + r * self.grad(v) @ direction
-            ):
-                logging.warning('Unsatisfied convexity inequality.')
-
-        logging.debug(f'Backtraching line search final parameter : {r}')
-        return v + r*direction
+        logger.debug(f'Backtraching line search final parameter : {r}')
+        return v + r * direction
 
     def newton_optimize(self):
-        logging.debug('Starting a new Newton optimization.')
+        logger.debug('Starting a new Newton optimization.')
         v = self.v0
+        func = self.evaluate(v)
+
         variables_iterates = [v]
-        objective_iterates = [self.evaluate(v).item()]
-        gradients_norm_iterates = [torch.linalg.vector_norm(self.grad(v)).item()]
+        objective_iterates = [func]
+        newton_decrement_iterates = []
+        logger.debug(f'Initial objective value: {func}')
 
         step = 0
-        while torch.linalg.vector_norm(self.grad(v)).item() > self.eps and step <= self.max_step:
-            #direction = self.newton_direction(v)
-            direction = self.sgd_direction(v)
-            v = self.backtrack_line_search(v, direction)
+        while True and step <= self.max_step:
+        
+            direction = self.newton_direction(v)
+            decrement = self.newton_decrement_squared(v, direction)
+            newton_decrement_iterates.append(decrement)
+            logger.debug(f'Newton decrement : {newton_decrement_iterates[-1]}')
 
+            if decrement < self.eps:
+                logger.debug(f"Newton's decrement criterion met : {decrement:4.2e} < {self.eps:4.2e}")
+                break
+
+            logger.debug('Newton decrement not met, updating v')
+            v = self.backtrack_line_search(v, direction)
             variables_iterates.append(v)
             objective_iterates.append(self.evaluate(v).item())
-            gradients_norm_iterates.append(torch.linalg.vector_norm(self.grad(v)).item())
-
-            logging.debug('New step for Newton optimization')
-            logging.debug(f'New value for v : {v}')
-            logging.debug(f'Objective value : {objective_iterates[-1]}')
-            logging.debug(f'Gradient norm : {gradients_norm_iterates[-1]}')
+            logger.debug(f'New objective value : {objective_iterates[-1]}')
 
             step += 1
 
         if step > self.max_step:
-            logging.warning("Max step number reached before gradient norm stopping criterion.")
+            logger.warning("Max step number reached before gradient norm stopping criterion.")
 
-        logging.debug('End of Newton optimization.')
+        logger.debug('End of Newton optimization.')
 
-        return variables_iterates, objective_iterates, gradients_norm_iterates
+        return variables_iterates, objective_iterates, newton_decrement_iterates
 
 
 def centering_step(
-    Q: torch.tensor,
-    p: torch.tensor,
-    A: torch.tensor,
-    b: torch.tensor,
+    Q: np.ndarray,
+    p: np.ndarray,
+    A: np.ndarray,
+    b: np.ndarray,
     t: float,
-    v0: torch.tensor,
+    v0: np.ndarray,
     eps: float,
-) -> t.List[torch.tensor]:
+) -> t.List[np.ndarray]:
 
     solver = Centering(Q, p, A, b, t, v0, eps)
     return solver.newton_optimize()[0]
@@ -149,20 +160,20 @@ def centering_step(
 
 if __name__ == '__main__':
 
+    np.random.seed()
     dim = 20
 
-    q_gen = torch.randn(dim, dim)
-    Q = torch.mm(q_gen, q_gen.t()) + torch.eye(dim)
-    p = torch.randn(dim)
-    A = torch.randn(dim, 5*dim)
-    b = 100+torch.randn(5*dim)
-    t = 10
-    v0 = torch.zeros(dim)
-    eps = 10e-6
+    q_gen = np.random.random((dim, dim))
+    Q = np.matmul(q_gen, q_gen.transpose()) + np.eye(dim)
+    p = np.random.random(dim)
+    A = np.random.random((5*dim, dim))
+    b = 100+np.random.random(5*dim)
+    t_ = 10
+    v0 = np.zeros(dim)
+    eps = 10e-8
 
-    test = Centering(Q, p, A, b, t, v0, eps)
-    variables_iterates, objective_iterates, gradients_norm_iterates = test.newton_optimize()
+    test = Centering(Q, p, A, b, t_, v0, eps)
+    variables_iterates, objective_iterates, newton_decrement_iterates = test.newton_optimize()
 
-    logging.info(f'Objective last iterates: {objective_iterates[-1]}')
-    logging.info(f'Variables last iterates: {variables_iterates[-1]}')
-    logging.info(f'Gradients norm last iterates: {gradients_norm_iterates[-1]}')
+    logger.info(f'Objective last iterate: {objective_iterates[-1]}')
+    logger.info(f'Newton decrement last iterate: {newton_decrement_iterates[-1]}')
