@@ -2,9 +2,11 @@
 
 Jérémie Dentan (jeremie.dentan@live.com)
 
-## Existing outputs
+## Answers
 
-The code have been ran once, and the output are stored in `/output`. In particular:
+**For the main answers to this homework, please refer to `JDentan_answers.pdf`**
+
+The code have been run once, and the output are stored in `/output`. In particular:
 
 - `/output/summary.log` contains a summary of the logs of this execution
 - `/output/mu_performances.png` contains the figure of the performances the optimization depending on `mu`
